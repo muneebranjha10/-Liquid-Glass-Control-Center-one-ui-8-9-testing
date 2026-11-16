@@ -1,0 +1,32 @@
+name: Build CombineCC APK (experimental)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - run: sdkmanager 'build-tools;36.0.0' 'platforms;android-36'
+      - name: Unpack source and build APK
+        env:
+          CC_KEYSTORE_BASE64: ${{ secrets.CC_KEYSTORE_BASE64 }}
+          CC_KEY_ALIAS: ${{ secrets.CC_KEY_ALIAS }}
+          CC_KEYSTORE_PASS: ${{ secrets.CC_KEYSTORE_PASS }}
+          CC_KEY_PASS: ${{ secrets.CC_KEY_PASS }}
+        run: |
+          unzip -q 'CombineCC-Upload-This.zip' -d work
+          cd work
+          bash scripts/ci-build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CombineCC-OneUI8-9-UNTESTED
+          path: work/dist/CombineCC-OneUI8-9-UNTESTED.apk
+          retention-days: 14
