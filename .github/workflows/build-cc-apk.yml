@@ -18,8 +18,26 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
-      - run: sdkmanager 'build-tools;36.0.0' 'platforms;android-36'
+      - name: Locate Android SDK (GitHub runner)
+        run: |
+          set -euo pipefail
+          echo "ANDROID_HOME=${ANDROID_HOME:-}"
+          test -d "$ANDROID_HOME"
+          if command -v sdkmanager >/dev/null 2>&1; then
+            echo "sdkmanager available"
+          else
+            find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f | head -5
+          fi
+      - name: Install build tools and platform
+        run: |
+          set -euo pipefail
+          if command -v sdkmanager >/dev/null 2>&1; then
+            SDKMANAGER=sdkmanager
+          else
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager -print -quit)"
+          fi
+          test -n "$SDKMANAGER"
+          "$SDKMANAGER" 'build-tools;36.0.0' 'platforms;android-36'
       - name: Unpack source and build APK
         env:
           CC_KEYSTORE_BASE64: ${{ secrets.CC_KEYSTORE_BASE64 }}
