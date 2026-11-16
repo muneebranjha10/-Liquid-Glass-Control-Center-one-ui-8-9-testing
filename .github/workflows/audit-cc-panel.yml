@@ -1,0 +1,38 @@
+name: Audit ColorCC panel and stock suppression callbacks
+on:
+  push:
+    paths: ['.github/workflows/audit-cc-panel.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Extract original hook and panel classes
+        run: |
+          set -euo pipefail
+          mkdir -p input audit
+          unzip -p CombineCC-Upload-This.zip input/Combine-CC-Geometry-Experimental.apk > input/base.apk
+          curl -fLsS --retry 3 -o apktool.jar https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar
+          echo 'dbf930b076c6b9be08d57c449cacefc3bdd6b71ebd59b3066fc0e1f5b14f9423  apktool.jar' | sha256sum -c -
+          java -jar apktool.jar d -f -r input/base.apk -o decoded
+          cp decoded/smali/dev/colorcc/Hook.smali audit/
+          cp decoded/smali/dev/colorcc/Panel.smali audit/
+          cp decoded/smali/dev/colorcc/Hook\$10.smali audit/
+          cp decoded/smali/dev/colorcc/Hook\$11.smali audit/
+          cp decoded/smali/dev/colorcc/Hook\$14.smali audit/
+          cp decoded/smali/dev/colorcc/Hook\$15.smali audit/
+          cp decoded/smali/dev/colorcc/Panel\$Body.smali audit/
+          grep -Ri 'stock\|replacesStockGrid\|setVisibility' audit/Hook\$*.smali | head -100 || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ColorCC-Panel-Callbacks-Audit
+          path: audit/
+          retention-days: 2
