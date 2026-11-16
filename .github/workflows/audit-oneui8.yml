@@ -1,0 +1,46 @@
+name: Audit original ColorCC One UI 8 hook compatibility
+on:
+  push:
+    paths:
+      - '.github/workflows/audit-oneui8.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Decode original hook bytecode without modifying it
+        run: |
+          set -euo pipefail
+          mkdir -p input decoded audit
+          unzip -p CombineCC-Upload-This.zip input/Combine-CC-Geometry-Experimental.apk > input/base.apk
+          curl -fLsS --retry 3 -o apktool.jar https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar
+          echo 'dbf930b076c6b9be08d57c449cacefc3bdd6b71ebd59b3066fc0e1f5b14f9423  apktool.jar' | sha256sum -c -
+          java -jar apktool.jar d -f -r input/base.apk -o decoded
+          cp decoded/smali/dev/colorcc/Hook.smali audit/Hook.smali
+          cp decoded/smali/dev/colorcc/Hook\$1.smali audit/Hook-1.smali
+          cp decoded/smali/dev/colorcc/Hook\$2.smali audit/Hook-2.smali
+          cp decoded/smali/dev/colorcc/Hook\$3.smali audit/Hook-3.smali
+          cp decoded/smali/dev/colorcc/Hook\$4.smali audit/Hook-4.smali
+          cp decoded/smali/dev/colorcc/Hook\$5.smali audit/Hook-5.smali
+          cp decoded/smali/dev/colorcc/Hook\$24.smali audit/Hook-24.smali
+          python3 - <<'PY'
+          import pathlib,re
+          s=pathlib.Path('audit/Hook.smali').read_text()
+          match=re.search(r'(?ms)^\.method private static install\(Ljava/lang/ClassLoader;\)V\n.*?^\.end method',s)
+          assert match, 'Original installer missing'
+          pathlib.Path('audit/install.smali').write_text(match.group(0))
+          print('Original Hook.install length:',len(match.group(0)),'bytes')
+          print('Original hook installer Class and method names:')
+          for ln in match.group(0).splitlines():
+              if 'const-string' in ln or 'findAndHook' in ln or 'hookAll' in ln or 'new-instance' in ln:
+                  print(ln[:210])
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Original-ColorCC-Hook-Audit
+          path: audit/
+          retention-days: 2
