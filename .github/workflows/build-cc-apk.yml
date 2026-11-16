@@ -1,6 +1,11 @@
 name: Build CombineCC APK (experimental)
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-cc-apk.yml'
+      - 'CombineCC-Upload-This.zip'
 permissions:
   contents: read
 jobs:
