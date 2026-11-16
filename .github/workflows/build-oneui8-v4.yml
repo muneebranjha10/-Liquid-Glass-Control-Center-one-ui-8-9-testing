@@ -1,0 +1,130 @@
+name: Build One UI 8 safe Compose bridge candidate
+on:
+  push:
+    paths:
+      - '.github/workflows/build-oneui8-v4.yml'
+      - 'oneui8-v4/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Verify Android SDK setup
+        run: |
+          set -euo pipefail
+          if [ ! -x "$ANDROID_HOME/build-tools/36.0.0/d8" ] || [ ! -s "$ANDROID_HOME/platforms/android-36/android.jar" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager -print -quit)"
+            test -n "$SDKMANAGER"
+            "$SDKMANAGER" 'build-tools;36.0.0' 'platforms;android-36'
+          fi
+      - name: Decode unchanged original APK
+        run: |
+          set -euo pipefail
+          mkdir -p input build dist
+          unzip -p CombineCC-Upload-This.zip input/Combine-CC-Geometry-Experimental.apk > input/original.apk
+          echo 'd731fb16db3fee293148731fee962a49432c484dfc5490fea9c8ac94bcd8694c  input/original.apk' | sha256sum -c -
+          unzip -t input/original.apk >/dev/null
+          test "$(unzip -p input/original.apk assets/xposed_init)" = 'dev.colorcc.Hook'
+          curl -fLsS --retry 3 -o apktool.jar https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar
+          echo 'dbf930b076c6b9be08d57c449cacefc3bdd6b71ebd59b3066fc0e1f5b14f9423  apktool.jar' | sha256sum -c -
+          java -jar apktool.jar d -f -r input/original.apk -o build/decoded
+      - name: Apply precisely two guarded hook adjustments
+        run: |
+          set -euo pipefail
+          python3 oneui8-v4/patch.py --decoded build/decoded --report build/patch-report.json
+          java -jar apktool.jar b build/decoded -o build/rebuilt-unsigned.apk
+      - name: Compile fallback against Android & Xposed stubs
+        run: |
+          set -euo pipefail
+          mkdir -p build/stubs/de/robv/android/xposed build/stubs/dev/colorcc build/compiled build/guardjar/dev/colorcc/compat build/guardjar/dev/colorcc build/dex
+          cat > build/stubs/de/robv/android/xposed/XC_MethodHook.java <<'EOF'
+          package de.robv.android.xposed;
+          public abstract class XC_MethodHook {
+              protected void afterHookedMethod(MethodHookParam param) throws Throwable { }
+              public static class MethodHookParam { public Object thisObject; public Object getResult() { return null; } }
+              public static class Unhook { }
+              public Object getResult() { return null; }
+          }
+          EOF
+          cat > build/stubs/de/robv/android/xposed/XposedBridge.java <<'EOF'
+          package de.robv.android.xposed;
+          import java.util.Set;
+          public final class XposedBridge {
+              public static void log(String text) { }
+              public static Set<XC_MethodHook.Unhook> hookAllMethods(Class<?> c, String n, XC_MethodHook h) { return null; }
+          }
+          EOF
+          cat > build/stubs/de/robv/android/xposed/XposedHelpers.java <<'EOF'
+          package de.robv.android.xposed;
+          public final class XposedHelpers {
+              public static XC_MethodHook.Unhook findAndHookMethod(Class<?> c, String n, Object... args) { return null; }
+          }
+          EOF
+          cat > build/stubs/dev/colorcc/Panel.java <<'EOF'
+          package dev.colorcc;
+          import android.content.Context;
+          import android.widget.FrameLayout;
+          class Panel extends FrameLayout {
+              Panel(Context c) { super(c); }
+          }
+          EOF
+          cat > build/stubs/dev/colorcc/Hook.java <<'EOF'
+          package dev.colorcc;
+          import android.view.ViewGroup;
+          class Hook {
+              static Panel access$400() { return null; }
+              static void access$2200(ViewGroup root) { }
+          }
+          EOF
+          javac --release 8 -classpath "$ANDROID_HOME/platforms/android-36/android.jar" -encoding UTF-8 -d build/compiled oneui8-v4/OneUI8PanelFallback.java oneui8-minimal/SafeHooks.java build/stubs/de/robv/android/xposed/*.java build/stubs/dev/colorcc/*.java
+          cp build/compiled/dev/colorcc/OneUI8PanelFallback*.class build/guardjar/dev/colorcc/
+          cp build/compiled/dev/colorcc/compat/SafeHooks.class build/guardjar/dev/colorcc/compat/
+          jar cf build/additions.jar -C build/guardjar .
+          ! jar tf build/additions.jar | grep -Eq '^(de/robv/android/xposed|dev/colorcc/Hook.class|dev/colorcc/Panel.class)'
+          "$ANDROID_HOME/build-tools/36.0.0/d8" --min-api 33 --lib "$ANDROID_HOME/platforms/android-36/android.jar" --output build/dex build/additions.jar
+          cp build/rebuilt-unsigned.apk build/module-unsigned.apk
+          cp build/dex/classes.dex build/classes2.dex
+          (cd build && zip -q -9 module-unsigned.apk classes2.dex)
+          test "$(unzip -Z1 build/module-unsigned.apk | grep -Ec '^classes([0-9]+)?\.dex$')" -eq 2
+          test "$(unzip -p build/module-unsigned.apk assets/xposed_init)" = 'dev.colorcc.Hook'
+          unzip -p build/module-unsigned.apk classes2.dex | strings | grep -F 'OneUI8PanelFallback'
+          unzip -t build/module-unsigned.apk >/dev/null
+      - name: Sign and verify experimental APK
+        env:
+          KEY_B64: ${{ secrets.CC_KEYSTORE_BASE64 }}
+          KEY_ALIAS: ${{ secrets.CC_KEY_ALIAS }}
+          STORE_PASS: ${{ secrets.CC_KEYSTORE_PASS }}
+          KEY_PASS: ${{ secrets.CC_KEY_PASS }}
+        run: |
+          set -euo pipefail
+          TOOL="$ANDROID_HOME/build-tools/36.0.0"
+          "$TOOL/zipalign" -p -f 4 build/module-unsigned.apk build/aligned.apk
+          "$TOOL/zipalign" -c -p 4 build/aligned.apk
+          if [ -n "$KEY_B64" ]; then
+            test -n "$KEY_ALIAS" && test -n "$STORE_PASS" && test -n "$KEY_PASS"
+            printf %s "$KEY_B64" | base64 -d > build/signing.jks
+            alias_name="$KEY_ALIAS"; store_pass="$STORE_PASS"; key_pass="$KEY_PASS"
+          else
+            keytool -genkeypair -noprompt -keystore build/signing.jks -alias test -storepass android -keypass android -keyalg RSA -keysize 3072 -validity 3650 -dname 'CN=CombineCC OneUI8 Attachment TEST'
+            alias_name=test; store_pass=android; key_pass=android
+          fi
+          "$TOOL/apksigner" sign --ks build/signing.jks --ks-key-alias "$alias_name" --ks-pass "pass:$store_pass" --key-pass "pass:$key_pass" --out dist/CombineCC-OneUI8-ComposeBridge-UNTESTED.apk build/aligned.apk
+          "$TOOL/apksigner" verify --verbose --print-certs dist/CombineCC-OneUI8-ComposeBridge-UNTESTED.apk
+          unzip -t dist/CombineCC-OneUI8-ComposeBridge-UNTESTED.apk >/dev/null
+          unzip -p dist/CombineCC-OneUI8-ComposeBridge-UNTESTED.apk classes2.dex | strings | grep -F "onCreateView"
+          sha256sum dist/CombineCC-OneUI8-ComposeBridge-UNTESTED.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CombineCC-OneUI8-ComposeBridge-UNTESTED
+          path: |
+            dist/CombineCC-OneUI8-ComposeBridge-UNTESTED.apk
+            build/patch-report.json
+          retention-days: 14
